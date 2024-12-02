@@ -3,9 +3,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 /// original_key を new_key に変換して送信する関数
-pub fn send_key_input(_original_key: char, new_key: char) {
+pub fn send_key_input(_original_key: u32, new_key: u32) {
     unsafe {
-        let vk = VIRTUAL_KEY(new_key as u16); // new_key を仮想キーコードに変換
+        let vk = VIRTUAL_KEY(new_key as u16); // u32 から仮想キーコードに変換
 
         // キー押下とリリースイベントを配列として一括で送信
         let inputs = [
