@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use pc_keyboard::{
     layouts::{Jis109Key, Us104Key},
-    HandleControl, Keyboard, ScancodeSet1, KeyEvent, KeyCode, DecodedKey,
+    DecodedKey, HandleControl, KeyCode, KeyEvent, Keyboard, ScancodeSet1,
 };
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -26,13 +26,15 @@ extern "system" fn low_level_keyboard_proc(
             let kbdllhookstruct = *(l_param.0 as *const KBDLLHOOKSTRUCT);
             let scancode = kbdllhookstruct.scanCode as u8;
 
-            let mut jis_keyboard = Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore);
-            let mut us_keyboard = Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore);
+            let mut jis_keyboard =
+                Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore);
+            let mut us_keyboard =
+                Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore);
 
             let key_event = KeyEvent {
                 code: match scancode {
-                    0x0B => KeyCode::Key0, // 0
-                    0x02 => KeyCode::Key1, // 1
+                    0x0B => KeyCode::Key0,                                                   // 0
+                    0x02 => KeyCode::Key1,                                                   // 1
                     _ => return CallNextHookEx(HHOOK(null_mut()), n_code, w_param, l_param), // 未対応キーはスルー
                 },
                 state: pc_keyboard::KeyState::Down,
@@ -42,7 +44,9 @@ extern "system" fn low_level_keyboard_proc(
                 if let Some(us_key) = us_keyboard.process_keyevent(key_event) {
                     match us_key {
                         DecodedKey::Unicode(c) => send_key_input(kbdllhookstruct.vkCode, c as u32),
-                        DecodedKey::RawKey(key_code) => send_key_input(kbdllhookstruct.vkCode, key_code as u32),
+                        DecodedKey::RawKey(key_code) => {
+                            send_key_input(kbdllhookstruct.vkCode, key_code as u32)
+                        }
                     }
                     return LRESULT(1); // 入力を遮断
                 }
