@@ -2,6 +2,9 @@
 name = "Rusle"
 version = "0.1.0"
 edition = "2021"
+authors = ["L4Ph <4ranci0ne@gmail.com>"]
+license-file = "LICENSE"
+repository = "https://github.com/L4Ph/Rusle"
 
 [dependencies]
 crossterm = "0.27"
