@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["L4Ph <4ranci0ne@gmail.com>"]
 license-file = "LICENSE"
+description = "Rust reimplementation version of ULE4JIS"
 repository = "https://github.com/L4Ph/Rusle"
 
 [dependencies]
