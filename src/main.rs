@@ -34,7 +34,17 @@ extern "system" fn low_level_keyboard_proc(
             let key_event = KeyEvent {
                 code: match scancode {
                     0x0B => KeyCode::Key0,                                                   // 0
-                    0x02 => KeyCode::Key1,                                                   // 1
+                    0x02 => KeyCode::Key1,
+                    0x03 => KeyCode::Key2,  
+                    0x04 => KeyCode::Key3,
+                    0x05 => KeyCode::Key4,
+                    0x06 => KeyCode::Key5,
+                    0x07 => KeyCode::Key6,
+                    0x08 => KeyCode::Key7,
+                    0x09 => KeyCode::Key8,
+                    0x0A => KeyCode::Key9,
+                    0x0C => KeyCode::OemMinus,
+                    0x0D => KeyCode::OemPlus,                                                 // 1
                     _ => return CallNextHookEx(HHOOK(null_mut()), n_code, w_param, l_param), // 未対応キーはスルー
                 },
                 state: pc_keyboard::KeyState::Down,
@@ -43,9 +53,9 @@ extern "system" fn low_level_keyboard_proc(
             if let Some(_jis_key) = jis_keyboard.process_keyevent(key_event.clone()) {
                 if let Some(us_key) = us_keyboard.process_keyevent(key_event) {
                     match us_key {
-                        DecodedKey::Unicode(c) => send_key_input(kbdllhookstruct.vkCode, c as u32),
-                        DecodedKey::RawKey(key_code) => {
-                            send_key_input(kbdllhookstruct.vkCode, key_code as u32)
+                        DecodedKey::Unicode(_c) => send_key_input(kbdllhookstruct.vkCode),
+                        DecodedKey::RawKey(_key_code) => {
+                            send_key_input(kbdllhookstruct.vkCode)
                         }
                     }
                     return LRESULT(1); // 入力を遮断
