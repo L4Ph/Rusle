@@ -4,6 +4,7 @@ mod key_mapping;
 use key_mapping::get_key_code_for_scancode;
 use send_key_input::send_key_input;
 use std::ptr::null_mut;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -16,12 +17,12 @@ use pc_keyboard::{
     HandleControl, KeyEvent, Keyboard, ScancodeSet1,
 };
 use once_cell::sync::Lazy;
-use tokio::sync::Mutex;
 
 /// Flag to control the application's running state
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 // Create static instances of the keyboards to avoid recreating them on every key press
+// Using standard Mutex for better performance in synchronous context (keyboard hook)
 static JIS_KEYBOARD: Lazy<Mutex<Keyboard<Jis109Key, ScancodeSet1>>> = Lazy::new(|| {
     Mutex::new(Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore))
 });
@@ -58,19 +59,36 @@ extern "system" fn low_level_keyboard_proc(
 
             // Process the key through both JIS and US keyboard layouts using the static instances
             let process_through_keyboards = || -> bool {
-                // Try to lock the keyboards and process the key event
-                let mut jis_keyboard = JIS_KEYBOARD.lock().ok()?;
-                let mut us_keyboard = US_KEYBOARD.lock().ok()?;
+                // Get JIS keyboard lock - use try_lock to avoid deadlocks
+                let jis_lock_result = JIS_KEYBOARD.try_lock();
+                if jis_lock_result.is_err() {
+                    return false; // Skip if we can't get the lock immediately
+                }
+                let mut jis_keyboard = jis_lock_result.unwrap();
                 
-                let _jis_key = jis_keyboard.process_keyevent(key_event.clone())?;
-                let _us_key = us_keyboard.process_keyevent(key_event)?;
+                // Get US keyboard lock - use try_lock to avoid deadlocks
+                let us_lock_result = US_KEYBOARD.try_lock();
+                if us_lock_result.is_err() {
+                    return false; // Skip if we can't get the lock immediately
+                }
+                let mut us_keyboard = us_lock_result.unwrap();
                 
-                // If we reach here, both keyboards have processed the key successfully
-                Some(true)
+                // Create a second key event for the US keyboard to avoid move issues
+                let us_key_event = KeyEvent {
+                    code: key_code,
+                    state: pc_keyboard::KeyState::Down,
+                };
+                
+                // Process the key events with separate instances
+                let jis_result = jis_keyboard.process_keyevent(key_event);
+                let us_result = us_keyboard.process_keyevent(us_key_event);
+                
+                // Check if both keyboard layouts processed the key
+                matches!((jis_result, us_result), (Some(_), Some(_)))
             };
 
             // If key mapping is successful, send the key input
-            if process_through_keyboards() == Some(true) {
+            if process_through_keyboards() {
                 if let Err(e) = send_key_input(kbdllhookstruct.vkCode) {
                     eprintln!("Error sending key input: {}", e);
                 }
@@ -158,10 +176,8 @@ async fn main() {
 
     println!("Hook installed. Press Ctrl+C to exit.");
 
-    // Run message loop
-    tokio::spawn(async {
-        run_message_loop().await;
-    }).await.unwrap();
+    // Run message loop in the main thread to handle Windows hooks efficiently
+    run_message_loop().await;
 
     // Clean up
     if let Err(e) = cleanup_hook(hook) {
