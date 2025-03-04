@@ -62,7 +62,7 @@ pub fn send_key_input(new_key: u32) -> Result<(), KeyInputError> {
     ];
 
     unsafe {
-        let sent_count = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        let sent_count = SendInput(&inputs, std::mem::size_of_val(&inputs[0]) as i32);
         
         // Check if all inputs were sent successfully
         if sent_count != inputs.len() as u32 {

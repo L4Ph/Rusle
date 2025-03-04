@@ -15,22 +15,20 @@ use pc_keyboard::{
     layouts::{Jis109Key, Us104Key},
     HandleControl, KeyEvent, Keyboard, ScancodeSet1,
 };
-use lazy_static::lazy_static;
-use std::sync::Mutex;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
 
 /// Flag to control the application's running state
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 // Create static instances of the keyboards to avoid recreating them on every key press
-lazy_static! {
-    static ref JIS_KEYBOARD: Mutex<Keyboard<Jis109Key, ScancodeSet1>> = Mutex::new(
-        Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore)
-    );
-    
-    static ref US_KEYBOARD: Mutex<Keyboard<Us104Key, ScancodeSet1>> = Mutex::new(
-        Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore)
-    );
-}
+static JIS_KEYBOARD: Lazy<Mutex<Keyboard<Jis109Key, ScancodeSet1>>> = Lazy::new(|| {
+    Mutex::new(Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore))
+});
+
+static US_KEYBOARD: Lazy<Mutex<Keyboard<Us104Key, ScancodeSet1>>> = Lazy::new(|| {
+    Mutex::new(Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore))
+});
 
 /// Windows keyboard hook procedure that intercepts keystrokes
 ///
@@ -101,7 +99,7 @@ fn setup_keyboard_hook() -> Result<HHOOK, String> {
 }
 
 /// Main event loop to process Windows messages
-fn run_message_loop() {
+async fn run_message_loop() {
     unsafe {
         while RUNNING.load(Ordering::Relaxed) {
             let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
@@ -124,28 +122,30 @@ fn cleanup_hook(hook: HHOOK) -> Result<(), String> {
 }
 
 /// Register Ctrl+C handler to enable graceful shutdown
-fn setup_ctrl_c_handler() {
-    ctrlc::set_handler(|| {
-        println!("Received Ctrl+C, shutting down...");
-        RUNNING.store(false, Ordering::Relaxed);
-        
-        // Post a dummy message to unblock GetMessageW
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::PostMessageA(
-                HWND(null_mut()),
-                windows::Win32::UI::WindowsAndMessaging::WM_NULL,
-                WPARAM(0),
-                LPARAM(0),
-            ).ok();
-        }
-    }).expect("Error setting Ctrl+C handler");
+async fn setup_ctrl_c_handler() {
+    tokio::signal::ctrl_c().await.expect("Error setting Ctrl+C handler");
+    println!("Received Ctrl+C, shutting down...");
+    RUNNING.store(false, Ordering::Relaxed);
+    
+    // Post a dummy message to unblock GetMessageW
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostMessageA(
+            HWND(null_mut()),
+            windows::Win32::UI::WindowsAndMessaging::WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+        ).ok();
+    }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Starting keyboard layout converter...");
     
     // Set up Ctrl+C handler for graceful shutdown
-    setup_ctrl_c_handler();
+    tokio::spawn(async {
+        setup_ctrl_c_handler().await;
+    });
     
     // Setup keyboard hook
     let hook = match setup_keyboard_hook() {
@@ -159,7 +159,9 @@ fn main() {
     println!("Hook installed. Press Ctrl+C to exit.");
 
     // Run message loop
-    run_message_loop();
+    tokio::spawn(async {
+        run_message_loop().await;
+    }).await.unwrap();
 
     // Clean up
     if let Err(e) = cleanup_hook(hook) {
