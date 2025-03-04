@@ -4,6 +4,7 @@ mod key_mapping;
 use key_mapping::get_key_code_for_scancode;
 use send_key_input::send_key_input;
 use std::ptr::null_mut;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -15,22 +16,20 @@ use pc_keyboard::{
     layouts::{Jis109Key, Us104Key},
     HandleControl, KeyEvent, Keyboard, ScancodeSet1,
 };
-use lazy_static::lazy_static;
-use std::sync::Mutex;
+use once_cell::sync::Lazy;
 
 /// Flag to control the application's running state
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 // Create static instances of the keyboards to avoid recreating them on every key press
-lazy_static! {
-    static ref JIS_KEYBOARD: Mutex<Keyboard<Jis109Key, ScancodeSet1>> = Mutex::new(
-        Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore)
-    );
-    
-    static ref US_KEYBOARD: Mutex<Keyboard<Us104Key, ScancodeSet1>> = Mutex::new(
-        Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore)
-    );
-}
+// Using standard Mutex for better performance in synchronous context (keyboard hook)
+static JIS_KEYBOARD: Lazy<Mutex<Keyboard<Jis109Key, ScancodeSet1>>> = Lazy::new(|| {
+    Mutex::new(Keyboard::new(ScancodeSet1::new(), Jis109Key, HandleControl::Ignore))
+});
+
+static US_KEYBOARD: Lazy<Mutex<Keyboard<Us104Key, ScancodeSet1>>> = Lazy::new(|| {
+    Mutex::new(Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore))
+});
 
 /// Windows keyboard hook procedure that intercepts keystrokes
 ///
@@ -60,19 +59,36 @@ extern "system" fn low_level_keyboard_proc(
 
             // Process the key through both JIS and US keyboard layouts using the static instances
             let process_through_keyboards = || -> bool {
-                // Try to lock the keyboards and process the key event
-                let mut jis_keyboard = JIS_KEYBOARD.lock().ok()?;
-                let mut us_keyboard = US_KEYBOARD.lock().ok()?;
+                // Get JIS keyboard lock - use try_lock to avoid deadlocks
+                let jis_lock_result = JIS_KEYBOARD.try_lock();
+                if jis_lock_result.is_err() {
+                    return false; // Skip if we can't get the lock immediately
+                }
+                let mut jis_keyboard = jis_lock_result.unwrap();
                 
-                let _jis_key = jis_keyboard.process_keyevent(key_event.clone())?;
-                let _us_key = us_keyboard.process_keyevent(key_event)?;
+                // Get US keyboard lock - use try_lock to avoid deadlocks
+                let us_lock_result = US_KEYBOARD.try_lock();
+                if us_lock_result.is_err() {
+                    return false; // Skip if we can't get the lock immediately
+                }
+                let mut us_keyboard = us_lock_result.unwrap();
                 
-                // If we reach here, both keyboards have processed the key successfully
-                Some(true)
+                // Create a second key event for the US keyboard to avoid move issues
+                let us_key_event = KeyEvent {
+                    code: key_code,
+                    state: pc_keyboard::KeyState::Down,
+                };
+                
+                // Process the key events with separate instances
+                let jis_result = jis_keyboard.process_keyevent(key_event);
+                let us_result = us_keyboard.process_keyevent(us_key_event);
+                
+                // Check if both keyboard layouts processed the key
+                matches!((jis_result, us_result), (Some(_), Some(_)))
             };
 
             // If key mapping is successful, send the key input
-            if process_through_keyboards() == Some(true) {
+            if process_through_keyboards() {
                 if let Err(e) = send_key_input(kbdllhookstruct.vkCode) {
                     eprintln!("Error sending key input: {}", e);
                 }
@@ -101,7 +117,7 @@ fn setup_keyboard_hook() -> Result<HHOOK, String> {
 }
 
 /// Main event loop to process Windows messages
-fn run_message_loop() {
+async fn run_message_loop() {
     unsafe {
         while RUNNING.load(Ordering::Relaxed) {
             let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
@@ -124,28 +140,30 @@ fn cleanup_hook(hook: HHOOK) -> Result<(), String> {
 }
 
 /// Register Ctrl+C handler to enable graceful shutdown
-fn setup_ctrl_c_handler() {
-    ctrlc::set_handler(|| {
-        println!("Received Ctrl+C, shutting down...");
-        RUNNING.store(false, Ordering::Relaxed);
-        
-        // Post a dummy message to unblock GetMessageW
-        unsafe {
-            windows::Win32::UI::WindowsAndMessaging::PostMessageA(
-                HWND(null_mut()),
-                windows::Win32::UI::WindowsAndMessaging::WM_NULL,
-                WPARAM(0),
-                LPARAM(0),
-            ).ok();
-        }
-    }).expect("Error setting Ctrl+C handler");
+async fn setup_ctrl_c_handler() {
+    tokio::signal::ctrl_c().await.expect("Error setting Ctrl+C handler");
+    println!("Received Ctrl+C, shutting down...");
+    RUNNING.store(false, Ordering::Relaxed);
+    
+    // Post a dummy message to unblock GetMessageW
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostMessageA(
+            HWND(null_mut()),
+            windows::Win32::UI::WindowsAndMessaging::WM_NULL,
+            WPARAM(0),
+            LPARAM(0),
+        ).ok();
+    }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Starting keyboard layout converter...");
     
     // Set up Ctrl+C handler for graceful shutdown
-    setup_ctrl_c_handler();
+    tokio::spawn(async {
+        setup_ctrl_c_handler().await;
+    });
     
     // Setup keyboard hook
     let hook = match setup_keyboard_hook() {
@@ -158,8 +176,8 @@ fn main() {
 
     println!("Hook installed. Press Ctrl+C to exit.");
 
-    // Run message loop
-    run_message_loop();
+    // Run message loop in the main thread to handle Windows hooks efficiently
+    run_message_loop().await;
 
     // Clean up
     if let Err(e) = cleanup_hook(hook) {
